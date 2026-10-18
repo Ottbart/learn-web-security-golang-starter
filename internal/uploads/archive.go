@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +67,15 @@ func ExtractTaxDocumentArchive(encryptionKeyring Keyring, contents []byte, extra
 	plannedEntries := make([]plannedArchiveEntry, 0, len(archiveReader.File))
 	for _, entry := range archiveReader.File {
 		entryDestination := filepath.Join(importDirectory, entry.Name)
+		mode := entry.FileInfo().Mode()
+		isSymlink := mode & os.ModeSymlink
+		if !isInsideDirectory(importDirectory, entryDestination) ||
+			filepath.IsAbs(entry.Name) ||
+			strings.Contains(entry.Name, "\\") ||
+			isSymlink != 0 {
+			return ExtractedTaxDocumentArchive{}, &ArchiveImportError{Message: "archive entry escapes the extraction directory", StatusCode: 400}
+
+		}
 		if isIgnoredArchiveEntry(entry.Name) {
 			continue
 		}
@@ -79,9 +87,10 @@ func ExtractTaxDocumentArchive(encryptionKeyring Keyring, contents []byte, extra
 		if err != nil {
 			return ExtractedTaxDocumentArchive{}, &ArchiveImportError{Message: "Choose a valid ZIP archive.", StatusCode: 400}
 		}
-		contentType := mime.TypeByExtension(filepath.Ext(entry.Name))
-		if contentType == "" {
-			contentType = "application/octet-stream"
+		contentType, _, valid := detectDocumentType(entryContents)
+		if !valid {
+			return ExtractedTaxDocumentArchive{}, &ArchiveImportError{Message: "unsupported file type", StatusCode: 400}
+
 		}
 		storedContents, encrypted, err := encryptDocument(entryContents, encryptionKeyring)
 		if err != nil {
@@ -186,4 +195,16 @@ func discardArchiveAfterWriteFailure(archive ExtractedTaxDocumentArchive, err er
 		return ExtractedTaxDocumentArchive{}, errors.Join(err, discardErr)
 	}
 	return ExtractedTaxDocumentArchive{}, err
+}
+
+func isInsideDirectory(root, destination string) bool {
+	relativePath, err := filepath.Rel(root, destination)
+	if err != nil ||
+		relativePath == "." ||
+		relativePath == ".." ||
+		strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) ||
+		filepath.IsAbs(relativePath) {
+		return false
+	}
+	return true
 }
