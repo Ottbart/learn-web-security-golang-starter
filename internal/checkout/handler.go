@@ -87,6 +87,16 @@ func (handler *Handler) Submit(responseWriter http.ResponseWriter, request *http
 		handler.internalError(responseWriter, request, err)
 		return
 	}
+	actualToken, err := httpx.FormValue(request, "csrfToken")
+	if err != nil {
+		handler.internalError(responseWriter, request, err)
+		return
+	}
+	if !sessions.CSRFTokensMatch(current.Session.CSRFToken, actualToken) {
+		http.Error(responseWriter, "not authorized", http.StatusForbidden)
+		return
+	}
+
 	if len(items) == 0 {
 		http.Redirect(responseWriter, request, "/cart", http.StatusFound)
 		return

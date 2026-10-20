@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -36,23 +37,6 @@ func nosniffHeader(next http.Handler) http.Handler {
 	})
 }
 
-func permissiveCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-		if origin := request.Header.Get("Origin"); origin != "" {
-			responseWriter.Header().Set("Access-Control-Allow-Origin", origin)
-			responseWriter.Header().Set("Access-Control-Allow-Credentials", "true")
-			responseWriter.Header().Set("Vary", "Origin")
-		}
-		if request.Method == http.MethodOptions {
-			responseWriter.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			responseWriter.Header().Set("Access-Control-Allow-Headers", request.Header.Get("Access-Control-Request-Headers"))
-			responseWriter.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(responseWriter, request)
-	})
-}
-
 func cspNonce(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		nonceBytes := make([]byte, 16)
@@ -64,6 +48,55 @@ func cspNonce(next http.Handler) http.Handler {
 		request = request.WithContext(httpx.WithCSPNonce(request.Context(), nonce))
 		next.ServeHTTP(responseWriter, request)
 	})
+}
+
+func contentSecurityPolicy(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		cspNonce := httpx.CSPNonce(request.Context())
+		directives := []string{
+			"default-src 'self'",
+			fmt.Sprintf("script-src 'self' 'nonce-%s'", cspNonce),
+			"style-src 'self'",
+			"img-src 'self' data:",
+			"frame-src 'self'",
+			"object-src 'none'",
+			"base-uri 'self'",
+			"form-action 'self'",
+			"frame-ancestors 'self'",
+		}
+		responseWriter.Header().Set("Content-Security-Policy", strings.Join(directives, "; "))
+		responseWriter.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		//responseWriter.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(responseWriter, request)
+	})
+}
+
+func validateOrigin(appOrigin string, renderer *templates.Renderer) middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+			//responseWriter.Header().Set("X-Content-Type-Options", "nosniff")
+			if request.Method != http.MethodPost {
+				next.ServeHTTP(responseWriter, request)
+				return
+			}
+			origin := request.Header.Get("Origin")
+			if origin == appOrigin {
+				next.ServeHTTP(responseWriter, request)
+				return
+			}
+			if origin == "" {
+				referer := request.Header.Get("Referer")
+				parsedReferer, err := url.Parse(referer)
+				if err == nil && referer != "" && parsedReferer.Scheme+"://"+parsedReferer.Host == appOrigin {
+					next.ServeHTTP(responseWriter, request)
+					return
+				}
+			}
+			if err := httpx.RespondWithErrorPage(responseWriter, renderer, http.StatusForbidden, "Forbidden", "This request did not come from Bearly Secure."); err != nil {
+				http.Error(responseWriter, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			}
+		})
+	}
 }
 
 func recoverPanics(logger *logging.Logger, renderer *templates.Renderer) middleware {
