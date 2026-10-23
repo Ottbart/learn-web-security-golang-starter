@@ -13,7 +13,8 @@ import (
 func RespondWithError(responseWriter http.ResponseWriter, code int, message string) {
 	message = textutils.StripANSI(message)
 	if code >= 500 {
-		fmt.Printf("Responding with error code %v, message: %v\n", code, message)
+		fmt.Printf("Error: status code %v, message: %v", code, message)
+		message = "The request failed. Try again, or return to the store."
 	}
 	RespondWithJSON(responseWriter, code, map[string]string{"error": message})
 }
@@ -28,9 +29,16 @@ func RespondWithJSON(responseWriter http.ResponseWriter, code int, payload any) 
 }
 
 func RespondWithErrorPage(responseWriter http.ResponseWriter, renderer *templates.Renderer, statusCode int, title, message string) error {
+	if statusCode < 500 {
+		return renderer.Render(responseWriter, statusCode, "error", templates.ErrorPage{
+			Title:      title,
+			StatusCode: statusCode,
+			Message:    message,
+		})
+	}
 	return renderer.Render(responseWriter, statusCode, "error", templates.ErrorPage{
-		Title:      title,
+		Title:      "Something Went Wrong",
 		StatusCode: statusCode,
-		Message:    message,
+		Message:    "The request failed. Try again, or return to the store.",
 	})
 }
