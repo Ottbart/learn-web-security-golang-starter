@@ -166,6 +166,7 @@ func (handler *authHandler) TOTPLogin(responseWriter http.ResponseWriter, reques
 		"sessionId": session.Token,
 		"returnTo":  challenge.ReturnTo,
 	})
+
 	sessions.SetCookie(responseWriter, session)
 	clearTOTPLoginChallengeCookie(responseWriter)
 	http.Redirect(responseWriter, request, challenge.ReturnTo, http.StatusFound)
@@ -260,6 +261,19 @@ func (handler *authHandler) RecoverMFA(responseWriter http.ResponseWriter, reque
 		return
 	}
 	handler.logMFARecovery(user.Email, user.ID, true, "")
+	//rehash to argon2id when hash is legacy
+	if passwords.NeedsRehash(user.PasswordHash) {
+		argon2Hash, err := passwords.Hash(password)
+		if err != nil {
+			handler.internalError(responseWriter, request, err)
+			return
+		}
+		err = handler.accounts.UpdatePasswordHash(request.Context(), session.UserID, argon2Hash)
+		if err != nil {
+			handler.internalError(responseWriter, request, err)
+			return
+		}
+	}
 	sessions.SetCookie(responseWriter, session)
 	if challengeToken != "" {
 		clearTOTPLoginChallengeCookie(responseWriter)
@@ -313,6 +327,7 @@ func (handler *authHandler) RequestPasswordReset(responseWriter http.ResponseWri
 		"resetToken": resetToken.Value,
 		"resetLink":  resetLink,
 	})
+
 	if err := handler.renderPasswordResetRequest(responseWriter, http.StatusOK, true, "", ""); err != nil {
 		handler.internalError(responseWriter, request, err)
 	}

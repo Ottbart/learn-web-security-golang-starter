@@ -124,6 +124,21 @@ func (handler *authHandler) Login(responseWriter http.ResponseWriter, request *h
 		"sessionId": session.Token,
 		"returnTo":  returnTo,
 	})
+
+	//rehash to argon2id when hash is legacy
+	if passwords.NeedsRehash(user.PasswordHash) {
+		argon2Hash, err := passwords.Hash(password)
+		if err != nil {
+			handler.internalError(responseWriter, request, err)
+			return
+		}
+		err = handler.accounts.UpdatePasswordHash(request.Context(), session.UserID, argon2Hash)
+		if err != nil {
+			handler.internalError(responseWriter, request, err)
+			return
+		}
+	}
+
 	sessions.SetCookie(responseWriter, session)
 	if challengeToken != "" {
 		clearTOTPLoginChallengeCookie(responseWriter)

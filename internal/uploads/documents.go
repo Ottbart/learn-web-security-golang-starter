@@ -62,12 +62,22 @@ func detectDocumentType(contents []byte) (string, string, bool) {
 	return "", "", false
 }
 
-func encryptDocument(contents []byte, _ Keyring) (string, bool, error) {
-	return string(contents), false, nil
+func encryptDocument(contents []byte, keyring Keyring) (string, bool, error) {
+	encrypted, err := keyring.Encrypt(contents)
+	if err != nil {
+		return "", false, err
+	}
+
+	return encrypted, true, nil
 }
 
-func decryptDocument(storedContents string, _ Keyring) ([]byte, error) {
-	return []byte(storedContents), nil
+func decryptDocument(storedContents string, keyring Keyring) ([]byte, error) {
+	decrypted, err := keyring.Decrypt(storedContents)
+	if err != nil {
+		return nil, err
+	}
+
+	return decrypted, nil
 }
 
 func writeDocument(storagePath, storedContents string, encrypted bool) error {
