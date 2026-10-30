@@ -72,48 +72,6 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-/*
-	func nosniffHeader(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-			responseWriter.Header().Set("X-Content-Type-Options", "nosniff")
-			next.ServeHTTP(responseWriter, request)
-		})
-	}
-
-	func cspNonce(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-			nonceBytes := make([]byte, 16)
-			if _, err := rand.Read(nonceBytes); err != nil {
-				http.Error(responseWriter, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-				return
-			}
-			nonce := base64.StdEncoding.EncodeToString(nonceBytes)
-			request = request.WithContext(httpx.WithCSPNonce(request.Context(), nonce))
-			next.ServeHTTP(responseWriter, request)
-		})
-	}
-
-	func contentSecurityPolicy(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-			cspNonce := httpx.CSPNonce(request.Context())
-			directives := []string{
-				"default-src 'self'",
-				fmt.Sprintf("script-src 'self' 'nonce-%s'", cspNonce),
-				"style-src 'self'",
-				"img-src 'self' data:",
-				"frame-src 'self'",
-				"object-src 'none'",
-				"base-uri 'self'",
-				"form-action 'self'",
-				"frame-ancestors 'self'",
-			}
-			responseWriter.Header().Set("Content-Security-Policy", strings.Join(directives, "; "))
-			responseWriter.Header().Set("X-Frame-Options", "SAMEORIGIN")
-			//responseWriter.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-			next.ServeHTTP(responseWriter, request)
-		})
-	}
-*/
 func validateOrigin(appOrigin string, renderer *templates.Renderer) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
@@ -162,16 +120,44 @@ func recoverPanics(logger *logging.Logger, renderer *templates.Renderer) middlew
 	}
 }
 
-func LoadShedder(_ int, _ int) func(http.Handler) http.Handler {
+func LoadShedder(maxConcurrent, retryAfterSeconds int) func(http.Handler) http.Handler {
+	if maxConcurrent <= 0 {
+		panic("maximum concurrent requests must be positive")
+	}
+	if retryAfterSeconds <= 0 {
+		panic("retry-after delay must be positive")
+	}
+
+	inFlight := make(chan struct{}, maxConcurrent)
 	return func(next http.Handler) http.Handler {
-		return next
+		return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+			responseWriter.Header().Set("X-In-Flight-Limit", strconv.Itoa(maxConcurrent))
+			select {
+			case inFlight <- struct{}{}:
+				defer func() { <-inFlight }()
+				next.ServeHTTP(responseWriter, request)
+			default:
+				responseWriter.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+				httpx.RespondWithJSON(responseWriter, http.StatusServiceUnavailable, map[string]string{"error": "Service is at capacity"})
+			}
+		})
 	}
 }
 
-func SearchThrottle(_ *templates.Renderer) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return next
-	}
+func SearchThrottle(renderer *templates.Renderer) func(http.Handler) http.Handler {
+	const sharedSearchRateLimitKey = "search"
+	return fixedWindowRateLimiter(rateLimitOptions{
+		window:  time.Second,
+		maximum: 5,
+		key: func(*http.Request) string {
+			return sharedSearchRateLimitKey
+		},
+		onLimit: func(responseWriter http.ResponseWriter, _ *http.Request, _ rateLimitState) {
+			if err := httpx.RespondWithErrorPage(responseWriter, renderer, http.StatusTooManyRequests, "Search Is Busy", "Try again shortly."); err != nil {
+				http.Error(responseWriter, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			}
+		},
+	})
 }
 
 type rateLimitCounter struct {
@@ -280,9 +266,17 @@ func (limiter *fixedWindowLimiter) reject(responseWriter http.ResponseWriter, re
 }
 
 func fixedWindowRateLimiter(options rateLimitOptions) middleware {
-	validateRateLimitOptions(options)
+	limiter := newFixedWindowLimiter(options)
 	return func(next http.Handler) http.Handler {
-		return next
+		return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+			state, limited := limiter.consume(request)
+			if limited {
+				limiter.reject(responseWriter, request, state)
+				return
+			}
+			setRateLimitHeaders(responseWriter, state)
+			next.ServeHTTP(responseWriter, request)
+		})
 	}
 }
 

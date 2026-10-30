@@ -12,6 +12,7 @@ import (
 	"github.com/bootdotdev/learn-web-security/internal/auth/passwords"
 	"github.com/bootdotdev/learn-web-security/internal/auth/returnto"
 	"github.com/bootdotdev/learn-web-security/internal/auth/sessions"
+	"github.com/bootdotdev/learn-web-security/internal/botdetection"
 	"github.com/bootdotdev/learn-web-security/internal/httpx"
 	"github.com/bootdotdev/learn-web-security/internal/logging"
 	"github.com/bootdotdev/learn-web-security/internal/templates"
@@ -171,7 +172,10 @@ func (handler *authHandler) Signup(responseWriter http.ResponseWriter, request *
 		http.Redirect(responseWriter, request, "/account", http.StatusFound)
 		return
 	}
-
+	if botdetection.ProtectSignup(responseWriter, request, handler.renderer) {
+		_ = handler.renderSignup(responseWriter, http.StatusBadRequest, "you is robot, get out!")
+		return
+	}
 	email, emailErr := httpx.FormValue(request, "email")
 	displayName, displayNameErr := httpx.FormValue(request, "displayName")
 	password, passwordErr := httpx.FormValue(request, "password")
@@ -200,6 +204,7 @@ func (handler *authHandler) Signup(responseWriter http.ResponseWriter, request *
 		handler.internalError(responseWriter, request, err)
 		return
 	}
+
 	user, err := handler.accounts.CreateCustomer(request.Context(), email, displayName, passwordHash)
 	if err != nil {
 		if errors.Is(err, accounts.ErrEmailExists) {
@@ -226,9 +231,10 @@ func (handler *authHandler) Signup(responseWriter http.ResponseWriter, request *
 	http.Redirect(responseWriter, request, "/account", http.StatusFound)
 }
 
-func parseForm(_ int64, renderer *templates.Renderer) middleware {
+func parseForm(maxBodyBytes int64, renderer *templates.Renderer) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+			request.Body = http.MaxBytesReader(responseWriter, request.Body, maxBodyBytes)
 			if err := request.ParseForm(); err != nil {
 				statusCode := http.StatusBadRequest
 				heading := "Invalid Request"

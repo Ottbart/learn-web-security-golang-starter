@@ -23,7 +23,10 @@ type quotaExhaustedResponse struct {
 
 func ToQuotaResponse(quota Quota) QuotaResponse {
 	return QuotaResponse{
-		Used: quota.Used, Limit: quota.Limit, Remaining: quota.Remaining, ResetsAt: quota.ResetsAt,
+		Used:      quota.Used,
+		Limit:     quota.Limit,
+		Remaining: quota.Remaining,
+		ResetsAt:  quota.ResetsAt,
 	}
 }
 
